@@ -1,0 +1,9 @@
+Package: com.ndndndn.yeetalkpatch
+Name: YeeTalk Patch
+Author: ndndndn <jejejeje>
+Description: shjsjs
+Depends: mobilesubstrate
+Maintainer: ndndndn <jejejeje>
+Architecture: iphoneos-arm
+Section: Tweaks
+Version: 4.2.0
