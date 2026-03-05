@@ -1,0 +1,206 @@
+name: Bore Tunnel Setup
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  setup-bore-tunnel:
+    runs-on: ubuntu-latest
+   
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust and Cargo
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          cargo --version
+
+      - name: Install bore-cli
+        run: |
+          source ~/.cargo/env
+          cargo install bore-cli
+          echo "bore-cli installed successfully"
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass openssh-server
+
+      - name: Configure SSH on Port 2010
+        run: |
+          echo "🔧 Configuring SSH to use port 2010..."
+         
+          # Backup original config
+          sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+         
+          # Configure SSH for port 2010
+          sudo sed -i 's/^#Port 22/Port 2010/' /etc/ssh/sshd_config
+          sudo sed -i 's/^Port 22/Port 2010/' /etc/ssh/sshd_config
+         
+          # Enable password authentication
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+         
+          # Allow root login if needed (optional)
+          sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+         
+          # Add explicit port configuration if not present
+          if ! grep -q "^Port 2010" /etc/ssh/sshd_config; then
+            echo "Port 2010" | sudo tee -a /etc/ssh/sshd_config
+          fi
+         
+          echo "✅ SSH configured for port 2010"
+
+      - name: Set Password for runner User
+        run: |
+          echo "runner:12345678" | sudo chpasswd
+          echo "✅ Password set for runner user"
+
+      - name: Start SSH on Port 2010
+        run: |
+          echo "🚀 Starting SSH service on port 2010..."
+         
+          # Stop existing SSH if running
+          sudo systemctl stop ssh
+          sudo systemctl stop sshd
+         
+          # Start SSH with new configuration
+          sudo systemctl start ssh
+         
+          # Wait for SSH to start
+          sleep 5
+         
+          # Check if SSH is running on port 2010
+          echo "🔍 Checking if SSH is listening on port 2010..."
+          sudo netstat -tlnp | grep :2010
+         
+          if sudo netstat -tlnp | grep -q :2010; then
+            echo "✅ SSH is successfully running on port 2010"
+            sudo systemctl status ssh --no-pager
+          else
+            echo "❌ SSH failed to start on port 2010"
+            echo "Attempting to start SSH manually..."
+            sudo /usr/sbin/sshd -D -p 2010 &
+            sleep 5
+            sudo netstat -tlnp | grep :2010 || echo "❌ Still failed to start SSH"
+          fi
+         
+          # Set environment variable
+          echo "SSH_PORT=2010" >> $GITHUB_ENV
+
+      - name: Test Local SSH Connection on Port 2010
+        run: |
+          echo "🧪 Testing local SSH connection on port 2010..."
+         
+          # Wait for SSH to be fully ready
+          sleep 10
+         
+          # Test SSH connection multiple times
+          for i in {1..3}; do
+            echo "Attempt $i:"
+            sshpass -p "12345678" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p 2010 runner@localhost whoami && break
+            sleep 5
+          done
+         
+          if [ $? -eq 0 ]; then
+            echo "✅ Local SSH connection successful on port 2010"
+          else
+            echo "⚠️ Local SSH connection failed"
+            echo "Checking SSH status:"
+            sudo systemctl status ssh --no-pager
+            echo "Checking listening ports:"
+            sudo netstat -tlnp | grep 2010
+          fi
+
+      - name: Start Bore Tunnel on Port 2010
+        run: |
+          source ~/.cargo/env
+          echo "🚀 Starting bore tunnel on port 2010..."
+         
+          # Run bore tunnel in background and capture output
+          bore local 2010 --to bore.pub > bore_output.txt 2>&1 &
+          BORE_PID=$!
+         
+          # Wait for tunnel to establish
+          echo "⏳ Waiting for tunnel to establish..."
+          sleep 15
+         
+          # Display bore output
+          echo "📋 Bore tunnel output:"
+          cat bore_output.txt
+         
+          # Extract and display the port
+          if grep -q "listening at bore.pub:" bore_output.txt; then
+            PORT=$(grep -oP 'listening at bore.pub:\K\d+' bore_output.txt)
+            if [ -n "$PORT" ]; then
+              echo "✅ Bore tunnel established on port: $PORT"
+              echo "BORE_PORT=$PORT" >> $GITHUB_ENV
+            else
+              # Alternative extraction method
+              PORT=$(grep -o 'bore.pub:[0-9]*' bore_output.txt | cut -d':' -f2)
+              if [ -n "$PORT" ]; then
+                echo "✅ Bore tunnel established on port: $PORT"
+                echo "BORE_PORT=$PORT" >> $GITHUB_ENV
+              fi
+            fi
+          else
+            echo "❌ Failed to establish bore tunnel"
+            cat bore_output.txt
+          fi
+
+      - name: Verify SSH is Running on Port 2010
+        run: |
+          echo "🔍 Verifying SSH on port 2010:"
+          ps aux | grep ssh
+          echo ""
+          echo "📡 Network connections:"
+          sudo netstat -tlnp | grep 2010
+          echo ""
+          echo "🔧 SSH Configuration:"
+          grep -E "Port|PasswordAuthentication" /etc/ssh/sshd_config
+
+      - name: Display Connection Information
+        run: |
+          echo "═══════════════════════════════════════════"
+          echo "🔌 BORE TUNNEL CONNECTION DETAILS"
+          echo "═══════════════════════════════════════════"
+          echo "📡 Local SSH Port: 2010"
+          echo "🌐 Bore Tunnel: bore.pub:${{ env.BORE_PORT }}"
+          echo "👤 Username: runner"
+          echo "🔑 Password: 12345678"
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "📱 To connect:"
+          echo "1. Open Termius/SSH client"
+          echo "2. Host: bore.pub"
+          echo "3. Port: ${{ env.BORE_PORT }}"
+          echo "4. Username: runner"
+          echo "5. Password: 12345678"
+          echo "═══════════════════════════════════════════"
+         
+          # Final connection test
+          echo ""
+          echo "🧪 Final connection test:"
+          sshpass -p "12345678" ssh -o StrictHostKeyChecking=no -p 2010 runner@localhost echo "SSH connection test successful" || echo "⚠️ SSH test failed"
+
+      - name: Keep Tunnel Alive
+        run: |
+          echo "🔄 Bore tunnel is running on bore.pub:${{ env.BORE_PORT }} -> localhost:2010"
+          echo "📊 Status updates every 60 seconds:"
+          echo ""
+          COUNTER=0
+          while true; do
+            COUNTER=$((COUNTER + 1))
+            echo "[$(date)] ⏱️ Tunnel active for $COUNTER minutes - bore.pub:${{ env.BORE_PORT }} → localhost:2010"
+            echo "SSH PID: $(pgrep -f sshd || echo 'Not running')"
+            echo "Bore PID: $(pgrep -f bore || echo 'Not running')"
+            echo "---"
+            sleep 60
+          done
